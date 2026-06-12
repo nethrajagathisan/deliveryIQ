@@ -7,6 +7,7 @@ small helpers for running ad-hoc queries and checking table row counts.
 from __future__ import annotations
 
 import time
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -104,6 +105,76 @@ class BigQueryLoader:
         log.info(
             "loaded gcs file to bigquery",
             extra={"extra_fields": {**result, "source": gcs_uri}},
+        )
+        return result
+
+    def upsert_from_parquet(
+        self,
+        parquet_path: Path,
+        table_id: str,
+        unique_key_columns: list[str],
+    ) -> dict:
+        """Upsert a local Parquet file into a BigQuery table.
+
+        Loads the file into a temporary staging table, deduplicates rows
+        that share the same ``unique_key_columns`` (keeping one row per
+        key), then runs a ``MERGE`` into ``table_id`` — updating matching
+        rows and inserting new ones. The staging table is dropped afterwards.
+
+        Returns:
+            ``{rows_loaded, rows_affected, table_id, duration_seconds}``.
+        """
+        parquet_path = Path(parquet_path)
+        staging_table_id = f"_staging_{table_id}_{uuid.uuid4().hex[:8]}"
+
+        start = time.monotonic()
+
+        load_result = self.load_parquet_to_table(
+            parquet_path, staging_table_id, write_disposition="WRITE_TRUNCATE"
+        )
+
+        try:
+            staging_table = self.client.get_table(self._table_ref(staging_table_id))
+            columns = [field.name for field in staging_table.schema]
+
+            match_clause = " AND ".join(f"T.{col} = S.{col}" for col in unique_key_columns)
+            update_clause = ", ".join(f"{col} = S.{col}" for col in columns)
+            insert_columns = ", ".join(columns)
+            insert_values = ", ".join(f"S.{col}" for col in columns)
+            partition_clause = ", ".join(unique_key_columns)
+
+            merge_sql = f"""
+            MERGE `{self.project_id}.{self.dataset_id}.{table_id}` T
+            USING (
+                SELECT * EXCEPT(_row_number) FROM (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY {partition_clause}) AS _row_number
+                    FROM `{self.project_id}.{self.dataset_id}.{staging_table_id}`
+                )
+                WHERE _row_number = 1
+            ) S
+            ON {match_clause}
+            WHEN MATCHED THEN UPDATE SET {update_clause}
+            WHEN NOT MATCHED THEN INSERT ({insert_columns}) VALUES ({insert_values})
+            """
+
+            job = self.client.query(merge_sql)
+            job.result()
+            rows_affected = job.num_dml_affected_rows
+        finally:
+            self.client.delete_table(self._table_ref(staging_table_id), not_found_ok=True)
+
+        duration_seconds = time.monotonic() - start
+
+        result = {
+            "rows_loaded": load_result["rows_loaded"],
+            "rows_affected": rows_affected,
+            "table_id": table_id,
+            "duration_seconds": duration_seconds,
+        }
+
+        log.info(
+            "upserted parquet to bigquery table",
+            extra={"extra_fields": {**result, "source": str(parquet_path)}},
         )
         return result
 
