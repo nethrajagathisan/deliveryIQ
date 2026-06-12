@@ -1,0 +1,376 @@
+version: 2
+
+models:
+  - name: stg_restaurants
+    description: >
+      Cleaned restaurant master, one row per restaurant_id. Deduplicated on
+      restaurant_id keeping the highest-votes copy; city names standardised;
+      cuisines parsed; price and delivery attributes derived.
+    columns:
+      - name: restaurant_id
+        description: Unique restaurant identifier (primary key, grain of the table).
+        tests:
+          - unique
+          - not_null
+      - name: restaurant_name
+        description: Trimmed display name of the restaurant.
+      - name: city
+        description: >
+          Standardised city name (trimmed, Title-cased, common variants resolved —
+          Bengaluru→Bangalore, New Delhi→Delhi, Bombay→Mumbai).
+        tests:
+          - not_null
+      - name: address
+        description: Full street address of the restaurant.
+      - name: locality
+        description: Neighbourhood / locality within the city.
+      - name: longitude
+        description: Restaurant longitude in decimal degrees.
+      - name: latitude
+        description: Restaurant latitude in decimal degrees.
+      - name: cuisine_list
+        description: Original comma-separated list of cuisines served (unmodified).
+      - name: cuisine_primary
+        description: First cuisine listed before the first comma.
+      - name: cuisine_is_indian
+        description: TRUE if cuisines include North Indian, South Indian, Indian or Biryani.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: average_cost_for_two
+        description: Approximate cost for two diners in the local currency.
+      - name: currency
+        description: Currency in which average_cost_for_two is expressed.
+      - name: cost_per_person
+        description: average_cost_for_two divided by 2 (NULL-safe).
+      - name: has_table_booking
+        description: Whether the restaurant supports table booking.
+      - name: has_online_delivery
+        description: Raw online-delivery flag from bronze.
+      - name: is_delivery_available
+        description: Boolean delivery availability derived from has_online_delivery.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: price_range
+        description: Zomato price bucket (1=cheapest, 4=most expensive).
+      - name: price_tier
+        description: Human-readable price tier derived from price_range.
+        tests:
+          - accepted_values:
+              values: ['BUDGET', 'AFFORDABLE', 'PREMIUM', 'LUXURY']
+      - name: aggregate_rating
+        description: >
+          Aggregate customer rating cast to FLOAT64. Non-numeric Zomato sentinels
+          ("NEW", "-") and out-of-range values are set to NULL.
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 5
+              row_condition: "aggregate_rating is not null"
+      - name: rating_text
+        description: Textual rating label (e.g. Excellent, Good, Average).
+      - name: votes
+        description: Number of customer votes contributing to the rating.
+      - name: country_code
+        description: Zomato numeric country code.
+      - name: _ingested_at
+        description: UTC timestamp when the row was ingested by the extractor.
+      - name: _source_file
+        description: Name of the source file the row was extracted from.
+    tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 0
+      # asserts restaurant_id is fully unique; unlike the proportion test it does
+      # not divide by row count, so it no-ops cleanly on an empty table
+      - dbt_expectations.expect_column_values_to_be_unique:
+          column_name: restaurant_id
+
+  - name: stg_orders
+    description: >
+      Cleaned order events, one row per order_id. Deduplicated on order_id;
+      status normalised with boolean flags; temporal helpers (hour, day-of-week,
+      weekend) derived; outlier amounts (<=0 or >10000 INR) rejected.
+    columns:
+      - name: order_id
+        description: Unique order identifier (primary key, grain of the table).
+        tests:
+          - unique
+          - not_null
+      - name: restaurant_id
+        description: Restaurant the order was placed with.
+        tests:
+          - relationships:
+              to: ref('stg_restaurants')
+              field: restaurant_id
+      - name: customer_id
+        description: Identifier of the ordering customer.
+      - name: city
+        description: City in which the order was placed.
+      - name: order_date
+        description: Calendar date of the order (DATE).
+        tests:
+          - not_null
+      - name: order_datetime
+        description: Exact UTC timestamp the order was placed (TIMESTAMP).
+      - name: order_hour
+        description: Hour of day (0–23) extracted from order_datetime; for peak-hour analysis.
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 23
+              row_condition: "order_hour is not null"
+      - name: order_day_of_week
+        description: Day of week, 0=Monday … 6=Sunday.
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 6
+              row_condition: "order_day_of_week is not null"
+      - name: is_weekend
+        description: TRUE when order_day_of_week >= 5 (Saturday/Sunday).
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: order_amount_inr
+        description: Total order value in INR. Guaranteed in (0, 10000] after outlier rejection.
+        tests:
+          - not_null
+      - name: payment_method
+        description: Payment method used (e.g. UPI, card, cash).
+        tests:
+          - dbt_expectations.expect_column_proportion_of_unique_values_to_be_between:
+              min_value: 0.0
+              max_value: 0.5
+      - name: platform
+        description: Ordering platform / channel.
+      - name: order_status
+        description: Final order status, upper-cased.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['DELIVERED', 'CANCELLED', 'REFUND_REQUESTED', 'PENDING', 'IN_TRANSIT', 'PLACED']
+      - name: is_cancelled
+        description: TRUE when order_status = CANCELLED.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: is_delivered
+        description: TRUE when order_status = DELIVERED.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: is_refund_requested
+        description: TRUE when order_status = REFUND_REQUESTED.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: delivery_time_mins
+        description: Delivery duration in minutes.
+      - name: customer_rating
+        description: Customer-provided rating for the order (1–5).
+      - name: cuisine_category
+        description: Cuisine category of the ordered items.
+      - name: _generated_at
+        description: UTC timestamp when the synthetic order was generated.
+
+  - name: stg_restaurant_ratings
+    description: >
+      Ratings-over-time simulation, one row per restaurant_id. SCD Type 1:
+      current rating effective from valid_from with an open valid_to.
+    columns:
+      - name: restaurant_id
+        description: Unique restaurant identifier (primary key, grain of the table).
+        tests:
+          - unique
+          - not_null
+      - name: aggregate_rating
+        description: Current aggregate rating (FLOAT64); NULL for non-numeric sentinels.
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 5
+              row_condition: "aggregate_rating is not null"
+      - name: rating_text
+        description: Textual rating label.
+      - name: votes
+        description: Number of customer votes contributing to the rating.
+      - name: rating_tier
+        description: >
+          Rating band: EXCELLENT (>=4.5), GOOD (4.0–4.4), AVERAGE (3.5–3.9),
+          BELOW_AVERAGE (3.0–3.4), POOR (<3.0). NULL when rating is NULL.
+        tests:
+          - accepted_values:
+              values: ['EXCELLENT', 'GOOD', 'AVERAGE', 'BELOW_AVERAGE', 'POOR']
+      - name: valid_from
+        description: Date the rating version became effective (SCD Type 1; '2020-01-01').
+        tests:
+          - not_null
+      - name: valid_to
+        description: Date the rating version ceased to be effective (NULL = still current).
+      - name: is_current
+        description: TRUE for the current rating version (always TRUE under SCD Type 1).
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+    tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 0
+      # asserts restaurant_id is fully unique; unlike the proportion test it does
+      # not divide by row count, so it no-ops cleanly on an empty table
+      - dbt_expectations.expect_column_values_to_be_unique:
+          column_name: restaurant_id
+
+  - name: stg_weather
+    description: >
+      Cleaned daily weather per city, one row per (city, weather_date).
+      Deduplicated keeping the most recently fetched copy; city names aligned to
+      the stg_restaurants convention; Indian seasons and monsoon flags derived.
+    columns:
+      - name: city
+        description: Standardised city name (matches stg_restaurants convention).
+        tests:
+          - not_null
+          # weather is only sourced for DeliveryIQ cities, all of which appear in stg_restaurants
+          - relationships:
+              to: ref('stg_restaurants')
+              field: city
+      - name: weather_date
+        description: Calendar date of the observation (DATE).
+        tests:
+          - not_null
+      - name: temperature_max
+        description: Maximum temperature for the day (°C, FLOAT64).
+      - name: temperature_min
+        description: Minimum temperature for the day (°C, FLOAT64).
+      - name: temperature_range
+        description: temperature_max minus temperature_min (°C).
+      - name: precipitation_sum
+        description: Total precipitation for the day (mm, FLOAT64).
+      - name: windspeed_max
+        description: Maximum wind speed for the day (km/h, FLOAT64).
+      - name: weather_code
+        description: WMO weather interpretation code (INT64).
+      - name: weather_description
+        description: Human-readable description of the weather code.
+      - name: is_rainy
+        description: Whether the day was classified as rainy.
+      - name: weather_category
+        description: Derived category (heavy_rain, light_rain, extreme_heat, hot, normal).
+        tests:
+          - accepted_values:
+              values: ['heavy_rain', 'light_rain', 'extreme_heat', 'hot', 'normal']
+      - name: monsoon_month
+        description: TRUE for Jun–Oct (Indian monsoon season).
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: is_extreme_weather
+        description: TRUE when weather_category is heavy_rain or extreme_heat.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: season
+        description: Indian meteorological season (WINTER, SPRING, MONSOON, POST_MONSOON).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['WINTER', 'SPRING', 'MONSOON', 'POST_MONSOON']
+      - name: _fetched_at
+        description: UTC timestamp when the observation was fetched.
+    tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 0
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [city, weather_date]
+
+  - name: stg_ipl_schedule
+    description: >
+      Cleaned IPL fixtures, one row per (match_date, venue_city, team1, team2).
+      Deduplicated keeping the most recently ingested copy; venue_city aligned to
+      the stg_restaurants convention; knockout games flagged.
+    columns:
+      - name: match_date
+        description: Date the match is played (DATE).
+        tests:
+          - not_null
+      - name: season
+        description: IPL season year (INT64).
+      - name: match_number
+        description: Sequential match number within the season (INT64).
+      - name: team1
+        description: First competing team.
+      - name: team2
+        description: Second competing team.
+      - name: venue_city
+        description: Standardised host city (matches stg_restaurants convention).
+        tests:
+          - not_null
+      - name: match_type
+        description: Lower-cased match type.
+        tests:
+          - accepted_values:
+              values: ['league', 'qualifier', 'eliminator', 'final']
+      - name: winner
+        description: Winning team, if the match has been played.
+      - name: is_deliveryiq_city
+        description: Whether venue_city is one of the DeliveryIQ cities.
+      - name: match_label
+        description: Fixture label, "team1 vs team2".
+      - name: is_knockout
+        description: TRUE when match_type is qualifier, eliminator or final.
+        tests:
+          - accepted_values:
+              values: [true, false]
+              quote: false
+      - name: _ingested_at
+        description: UTC timestamp when the row was ingested.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [match_date, venue_city, team1, team2]
+
+  - name: stg_festival_calendar
+    description: >
+      Cleaned Indian festival/holiday calendar, one row per (festival_date,
+      festival_name). Multiple festivals per date are expected and preserved;
+      festival_type and region normalised to upper-case.
+    columns:
+      - name: festival_date
+        description: Date of the festival or holiday (DATE).
+        tests:
+          - not_null
+      - name: festival_name
+        description: Name of the festival or holiday.
+        tests:
+          - not_null
+      - name: festival_type
+        description: Upper-cased festival category.
+        tests:
+          - accepted_values:
+              values: ['NATIONAL', 'RELIGIOUS', 'REGIONAL', 'SEASONAL']
+      - name: region
+        description: Upper-cased region the festival applies to.
+        tests:
+          - accepted_values:
+              values: ['ALL', 'NORTH', 'SOUTH', 'WEST', 'EAST']
+      - name: is_major
+        description: Whether the festival is considered a major one.
+      - name: festival_year
+        description: Year extracted from festival_date (for grouping).
+      - name: festival_month
+        description: Month extracted from festival_date (for grouping).
+      - name: _ingested_at
+        description: UTC timestamp when the row was ingested.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [festival_date, festival_name]

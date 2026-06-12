@@ -170,11 +170,13 @@ TABLE_SPECS: list[dict] = [
 
 
 def ensure_dataset(client: bigquery.Client, dataset_id: str, location: str) -> None:
-    """Create the dataset if it does not already exist."""
+    """Create the dataset if it does not already exist, in the given location."""
     dataset_ref = client.dataset(dataset_id)
+    dataset = bigquery.Dataset(dataset_ref)
+    dataset.location = location
     try:
-        client.create_dataset(bigquery.Dataset(dataset_ref), exists_ok=False)
-        print(f"Created dataset {dataset_id}")
+        client.create_dataset(dataset, exists_ok=False)
+        print(f"Created dataset {dataset_id} in {location}")
     except Conflict:
         print(f"Dataset {dataset_id} already exists — skipped")
 
@@ -210,7 +212,7 @@ def main() -> None:
     project_id = os.environ["GCP_PROJECT_ID"]
     region = os.getenv("GCP_REGION", "asia-south1")
 
-    client = bigquery.Client(project=project_id)
+    client = bigquery.Client(project=project_id, location=region)
 
     ensure_dataset(client, BRONZE_DATASET, region)
 

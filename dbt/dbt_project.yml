@@ -1,0 +1,39 @@
+name: 'deliveryiq'
+version: '1.0.0'
+config-version: 2
+profile: 'deliveryiq'
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+models:
+  deliveryiq:
+    bronze:
+      +materialized: view
+      +schema: bronze
+      +tags: ["bronze"]
+    silver:
+      +materialized: table
+      +schema: silver
+      +tags: ["silver"]
+    gold:
+      +materialized: table
+      +schema: gold
+      +tags: ["gold"]
+      facts:
+        +materialized: incremental
+        +partition_by:
+          field: order_date
+          data_type: date
+          granularity: month
+        +cluster_by: ["city", "order_status"]
+
+vars:
+  start_date: "2020-01-01"
+  end_date: "2023-12-31"
+
+on-run-start:
+  - "{{ log('Starting dbt run for DeliveryIQ — ' ~ run_started_at, info=true) }}"

@@ -1,0 +1,195 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Raw, as-received Bronze-layer tables in BigQuery. No transformations are
+      applied here — these tables mirror exactly what the ingestion extractors
+      land in the `deliveryiq_bronze` dataset.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: deliveryiq_bronze
+
+    tables:
+      - name: raw_restaurants
+        identifier: raw_restaurants
+        description: >
+          Raw Zomato restaurant master data, ingested daily. Partitioned by
+          ingestion date and clustered by city and price range.
+        columns:
+          - name: restaurant_id
+            description: Unique Zomato restaurant identifier.
+          - name: restaurant_name
+            description: Display name of the restaurant.
+          - name: city
+            description: City in which the restaurant is located.
+          - name: address
+            description: Full street address of the restaurant.
+          - name: locality
+            description: Neighbourhood / locality within the city.
+          - name: longitude
+            description: Restaurant longitude in decimal degrees.
+          - name: latitude
+            description: Restaurant latitude in decimal degrees.
+          - name: cuisines
+            description: Comma-separated list of cuisines served.
+          - name: average_cost_for_two
+            description: Approximate cost for two diners in the local currency.
+          - name: currency
+            description: Currency in which average_cost_for_two is expressed.
+          - name: has_table_booking
+            description: Whether the restaurant supports table booking.
+          - name: has_online_delivery
+            description: Whether the restaurant supports online delivery.
+          - name: price_range
+            description: Zomato price bucket (1=cheapest, 4=most expensive).
+          - name: aggregate_rating
+            description: Aggregate customer rating (0.0–5.0).
+          - name: rating_text
+            description: Textual rating label (e.g. Excellent, Good, Average).
+          - name: votes
+            description: Number of customer votes contributing to the rating.
+          - name: country_code
+            description: Zomato numeric country code.
+          - name: _ingested_at
+            description: UTC timestamp when the row was ingested by the extractor.
+          - name: _source_file
+            description: Name of the source file the row was extracted from.
+          - name: _ingestion_date
+            description: Ingestion date used as the table partition key.
+
+      - name: raw_orders
+        identifier: raw_orders
+        description: >
+          Synthetic food-delivery orders, generated daily. Partitioned monthly
+          by order_date and clustered by city, platform and order_status.
+        loaded_at_field: _generated_at
+        freshness:
+          warn_after: {count: 1, period: day}
+          error_after: {count: 2, period: day}
+          # raw_orders has require_partition_filter=true on order_date, so the
+          # freshness query must constrain that partition column. Look back over
+          # the recent window that matters for freshness.
+          filter: order_date >= date_sub(current_date(), interval 90 day)
+        columns:
+          - name: order_id
+            description: Unique order identifier (primary key).
+          - name: restaurant_id
+            description: Foreign key to raw_restaurants.restaurant_id.
+          - name: customer_id
+            description: Identifier of the ordering customer.
+          - name: city
+            description: City in which the order was placed.
+          - name: order_date
+            description: Calendar date of the order (monthly partition key).
+          - name: order_datetime
+            description: Exact UTC timestamp the order was placed.
+          - name: order_amount_inr
+            description: Total order value in Indian Rupees.
+          - name: payment_method
+            description: Payment method used (e.g. UPI, card, cash).
+          - name: platform
+            description: Ordering platform / channel.
+          - name: order_status
+            description: Final status of the order (e.g. delivered, cancelled).
+          - name: delivery_time_mins
+            description: Delivery duration in minutes.
+          - name: customer_rating
+            description: Customer-provided rating for the order (1–5).
+          - name: cuisine_category
+            description: Cuisine category of the ordered items.
+          - name: _generated_at
+            description: UTC timestamp when the synthetic order was generated.
+
+      - name: raw_weather
+        identifier: raw_weather
+        description: >
+          Daily weather observations per DeliveryIQ city, fetched from the
+          Open-Meteo API. Partitioned by weather_date and clustered by city.
+        loaded_at_field: _fetched_at
+        freshness:
+          warn_after: {count: 3, period: day}
+        columns:
+          - name: city
+            description: City the weather observation applies to.
+          - name: weather_date
+            description: Calendar date of the observation (partition key).
+          - name: temperature_max
+            description: Maximum temperature for the day (°C).
+          - name: temperature_min
+            description: Minimum temperature for the day (°C).
+          - name: precipitation_sum
+            description: Total precipitation for the day (mm).
+          - name: windspeed_max
+            description: Maximum wind speed for the day (km/h).
+          - name: weather_code
+            description: WMO weather interpretation code.
+          - name: weather_description
+            description: Human-readable description of the weather code.
+          - name: is_rainy
+            description: Whether the day was classified as rainy.
+          - name: weather_category
+            description: Derived weather category bucket.
+          - name: _fetched_at
+            description: UTC timestamp when the observation was fetched.
+
+      - name: raw_ipl_schedule
+        identifier: raw_ipl_schedule
+        description: >
+          IPL match schedule used to flag match days. Static seed-style source
+          reloaded weekly at most, so freshness thresholds are looser than for
+          daily-refreshed sources.
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: {count: 7, period: day}
+        columns:
+          - name: match_date
+            description: Date the match is played.
+          - name: season
+            description: IPL season year.
+          - name: match_number
+            description: Sequential match number within the season.
+          - name: team1
+            description: First competing team.
+          - name: team2
+            description: Second competing team.
+          - name: venue_city
+            description: City hosting the match.
+          - name: match_type
+            description: Match type (e.g. league, qualifier, final).
+          - name: winner
+            description: Winning team, if the match has been played.
+          - name: is_deliveryiq_city
+            description: Whether venue_city is one of the DeliveryIQ cities.
+          - name: _ingested_at
+            description: UTC timestamp when the row was ingested.
+          - name: _source_file
+            description: Name of the source file the row was extracted from.
+          - name: _ingestion_date
+            description: Ingestion date used as the table partition key.
+
+      - name: raw_festival_calendar
+        identifier: raw_festival_calendar
+        description: >
+          Indian festival and holiday calendar used to flag festival days.
+          Static seed-style source reloaded weekly at most, so freshness
+          thresholds are looser than for daily-refreshed sources.
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: {count: 7, period: day}
+        columns:
+          - name: festival_date
+            description: Date of the festival or holiday.
+          - name: festival_name
+            description: Name of the festival or holiday.
+          - name: festival_type
+            description: Type/category of the festival (e.g. national, regional).
+          - name: region
+            description: Region the festival primarily applies to.
+          - name: is_major
+            description: Whether the festival is considered a major one.
+          - name: _ingested_at
+            description: UTC timestamp when the row was ingested.
+          - name: _source_file
+            description: Name of the source file the row was extracted from.
+          - name: _ingestion_date
+            description: Ingestion date used as the table partition key.
