@@ -1,0 +1,48 @@
+# DeliveryIQ Analytics — SQL linting configuration
+# Targets BigQuery dialect, templated through dbt.
+
+[sqlfluff]
+dialect = bigquery
+templater = dbt
+max_line_length = 120
+# Templated dbt models reference relations that don't exist until compiled;
+# skip the rules that produce noise on dbt-Jinja heavy files.
+exclude_rules = RF02, RF03, ST06, AM04
+
+[sqlfluff:indentation]
+indent_unit = space
+tab_space_size = 4
+
+[sqlfluff:templater:dbt]
+project_dir = dbt
+profiles_dir = dbt
+profile = deliveryiq
+target = dev
+
+[sqlfluff:layout:type:comma]
+line_position = trailing
+
+# --- Capitalisation policy: lowercase keywords, snake_case identifiers ---
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.types]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:aliasing.table]
+aliasing = explicit
+
+[sqlfluff:rules:aliasing.column]
+aliasing = explicit
+
+[sqlfluff:rules:references.special_chars]
+allow_space_in_identifier = false

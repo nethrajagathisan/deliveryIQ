@@ -1,0 +1,29 @@
+# DeliveryIQ Analytics — Runtime dependencies
+# Pinned for reproducible builds across local dev, Docker, and CI.
+
+# --- Orchestration ---
+apache-airflow==2.8.4
+
+# --- Transformation ---
+dbt-bigquery==1.7.0
+
+# --- Data quality ---
+great-expectations==0.18.0
+
+# --- Google Cloud Platform ---
+google-cloud-bigquery==3.13.0
+google-cloud-storage==2.14.0
+
+# --- Data processing ---
+pandas==2.1.0
+polars==0.19.0
+
+# --- HTTP / API extraction ---
+requests==2.31.0
+tenacity==8.2.3
+
+# --- Configuration / secrets ---
+python-dotenv==1.0.0
+
+# --- Synthetic data generation ---
+faker==20.0.0
